@@ -1,110 +1,33 @@
-"""
-core/engine.py
-======================================================================
+from __future__ import annotations
 
+"""
 CAD Core Engine
 
-構造化されたCADパラメータ辞書を受け取り、
-CadQuery / OpenCASCADE を使用して3D形状を生成する。
-
-設計思想
-----------------------------------------------------------------------
-- 自然言語を扱わない
-- UIを扱わない
-- AIを扱わない
-- JSONで表現された構造化CAD定義だけを受け取る
-- 座標変換は core.transform に委譲する
-- 幾何計算は CadQuery / OCCT に委譲する
-
-入力
-----------------------------------------------------------------------
-{
-    "units": "mm",
-    "primitives": [...],
-    "operations": [...]
-}
-
-Primitive
-----------------------------------------------------------------------
-box
-cylinder
-sphere
-cone
-torus
-extrude
-
-Operation
-----------------------------------------------------------------------
-union
-subtract
-cut
-intersect
-fillet
-chamfer
-
-Transform
-----------------------------------------------------------------------
-position = [x, y, z]
-rotation = [rx, ry, rz]
-
-rotation:
-    degree
-
-適用順:
-    X -> Y -> Z -> translation
-
-実際の幾何計算:
-    CadQuery -> OpenCASCADE (OCCT / C++)
+CADコアエンジン本体。
 """
 
-from __future__ import annotations
+import cadquery as cq
 
 from dataclasses import dataclass, field
 from typing import Any
 
-import cadquery as cq
-
-from .transform import TransformError
-from .transform import apply_transform
-
-
-# ======================================================================
-# Exceptions
-# ======================================================================
+from .transform import (
+    TransformError,
+    apply_transform,
+)
+from .sketch import (
+    SketchError,
+    build_profile,
+    extrude_sketch,
+)
 
 
 class GeometryError(Exception):
-    """
-    CAD形状生成・変換・Boolean・加工などに失敗した場合の例外。
-    """
-
-
-# ======================================================================
-# Result
-# ======================================================================
+    """幾何生成・ブーリアン演算に失敗したときの例外。"""
 
 
 @dataclass
 class BuildResult:
-    """
-    CAD生成結果。
-
-    solid:
-        最終的な CadQuery Workplane
-
-    volume:
-        体積 mm^3
-
-    face_count:
-        面数
-
-    edge_count:
-        エッジ数
-
-    warnings:
-        形状自体は生成できたが注意が必要な事項
-    """
-
     solid: Any
     volume: float
     face_count: int
@@ -112,828 +35,208 @@ class BuildResult:
     warnings: list[str] = field(default_factory=list)
 
 
-# ======================================================================
-# Helpers
-# ======================================================================
-
-
-def _get_params(prim: dict) -> dict:
-    """
-    primitive.params を取得する。
-
-    params が存在しない、またはdictでない場合は GeometryError。
-    """
-
-    primitive_id = prim.get("id")
-
-    params = prim.get("params", {})
-
-    if not isinstance(params, dict):
-        raise GeometryError(
-            f"primitive '{primitive_id}' のparamsはオブジェクトで指定してください"
-        )
-
-    return params
-
-
-def _apply_primitive_transform(
-    shape: cq.Workplane,
-    prim: dict,
-) -> cq.Workplane:
-    """
-    primitive に position / rotation を適用する。
-
-    実際の処理は core.transform に委譲する。
-
-    engine.py は座標変換アルゴリズムを持たない。
-    """
-
-    try:
-        return apply_transform(shape, prim)
-
-    except TransformError as e:
-        raise GeometryError(str(e)) from e
-
-    except Exception as e:
-        primitive_id = prim.get("id")
-
-        raise GeometryError(
-            f"primitive '{primitive_id}' の座標変換に失敗しました: {e}"
-        ) from e
-
-
-# ======================================================================
-# Primitive Builders
-# ======================================================================
-
-
 def _build_primitive(prim: dict) -> cq.Workplane:
-    """
-    1つのprimitive定義からCadQuery Workplaneを生成する。
-
-    JSON仕様:
-        box
-        cylinder
-        sphere
-        cone
-        torus
-        extrude
-    """
-
-    primitive_id = prim.get("id")
     ptype = prim.get("type")
-
-    if not ptype:
-        raise GeometryError(
-            f"primitive '{primitive_id}' にtypeがありません"
-        )
+    p = prim.get("params", {})
 
     try:
-        params = _get_params(prim)
-
-        # --------------------------------------------------------------
-        # BOX
-        # --------------------------------------------------------------
-        #
-        # 正式JSON:
-        #
-        #   width
-        #   depth
-        #   height
-        #
-        # 旧形式:
-        #
-        #   length
-        #   width
-        #   height
-        #
-        # の両方を受け付ける。
-        #
-        if ptype == "box":
-
-            if "width" not in params:
-                raise GeometryError(
-                    f"box '{primitive_id}' にwidthがありません"
-                )
-
-            if "depth" in params:
-                width = params["width"]
-                depth = params["depth"]
-
-            elif "length" in params:
-                # 旧仕様との互換性
-                width = params["length"]
-                depth = params["width"]
-
-            else:
-                raise GeometryError(
-                    f"box '{primitive_id}' にdepthがありません"
-                )
-
-            if "height" not in params:
-                raise GeometryError(
-                    f"box '{primitive_id}' にheightがありません"
-                )
-
-            shape = (
-                cq.Workplane("XY")
-                .box(
-                    width,
-                    depth,
-                    params["height"],
-                )
+        if not isinstance(p, dict):
+            raise GeometryError(
+                f"プリミティブ '{prim.get('id')}' のparamsはオブジェクトで指定してください"
             )
 
-            return _apply_primitive_transform(shape, prim)
-
-        # --------------------------------------------------------------
-        # CYLINDER
-        # --------------------------------------------------------------
+        if ptype == "box":
+            # JSON仕様(§5)に合わせて width(X軸) / depth(Y軸) / height(Z軸) を正式採用する。
+            shape = cq.Workplane("XY").box(p["width"], p["depth"], p["height"])
+            return apply_transform(shape, prim)
 
         if ptype == "cylinder":
-
-            if "radius" not in params:
-                raise GeometryError(
-                    f"cylinder '{primitive_id}' にradiusがありません"
-                )
-
-            if "height" not in params:
-                raise GeometryError(
-                    f"cylinder '{primitive_id}' にheightがありません"
-                )
-
-            shape = (
-                cq.Workplane("XY")
-                .cylinder(
-                    params["height"],
-                    params["radius"],
-                )
-            )
-
-            return _apply_primitive_transform(shape, prim)
-
-        # --------------------------------------------------------------
-        # SPHERE
-        # --------------------------------------------------------------
+            shape = cq.Workplane("XY").cylinder(p["height"], p["radius"])
+            return apply_transform(shape, prim)
 
         if ptype == "sphere":
+            shape = cq.Workplane("XY").sphere(p["radius"])
+            return apply_transform(shape, prim)
 
-            if "radius" not in params:
-                raise GeometryError(
-                    f"sphere '{primitive_id}' にradiusがありません"
-                )
-
-            shape = (
-                cq.Workplane("XY")
-                .sphere(params["radius"])
-            )
-
-            return _apply_primitive_transform(shape, prim)
-
-        # --------------------------------------------------------------
-        # CONE
-        # --------------------------------------------------------------
-        #
-        # radius1:
-        #     下側半径
-        #
-        # radius2:
-        #     上側半径
-        #
-        # radius2 == 0 の場合は極小値にしてloft。
-        #
         if ptype == "cone":
-
-            radius1 = params.get(
-                "radius1",
-                params.get("radius", 10.0),
-            )
-
-            radius2 = params.get(
-                "radius2",
-                0.0,
-            )
-
-            height = params.get(
-                "height",
-                20.0,
-            )
-
-            if radius1 <= 0:
-                raise GeometryError(
-                    f"cone '{primitive_id}' のradius1は0より大きくしてください"
-                )
-
-            if radius2 < 0:
-                raise GeometryError(
-                    f"cone '{primitive_id}' のradius2は0以上にしてください"
-                )
-
-            if height <= 0:
-                raise GeometryError(
-                    f"cone '{primitive_id}' のheightは0より大きくしてください"
-                )
-
-            # OCCT/CadQueryのloftで完全な頂点半径0を避ける。
-            radius2_value = (
-                radius2
-                if radius2 > 0
-                else 1e-6
-            )
-
+            r1 = p.get("radius1", p.get("radius", 10.0))
+            r2 = p.get("radius2", 0.0)
+            height = p.get("height", 20.0)
+            r2_val = r2 if r2 > 0 else 1e-6
             shape = (
                 cq.Workplane("XY")
-                .circle(radius1)
+                .circle(r1)
                 .workplane(offset=height)
-                .circle(radius2_value)
+                .circle(r2_val)
                 .loft()
             )
+            return apply_transform(shape, prim)
 
-            return _apply_primitive_transform(shape, prim)
-
-        # --------------------------------------------------------------
-        # TORUS
-        # --------------------------------------------------------------
-        #
-        # 正式JSON:
-        #
-        #   radius_major
-        #   radius_minor
-        #
-        # 旧仕様:
-        #
-        #   radius1
-        #   radius2
-        #
-        # を両方受け付ける。
-        #
-        # 重要:
-        #   cq.Workplane().torus() は使用しない。
-        #
-        #   CadQueryのSolid.makeTorus()を使用する。
-        #
         if ptype == "torus":
-
-            radius_major = params.get(
-                "radius_major",
-                params.get("radius1", 10.0),
-            )
-
-            radius_minor = params.get(
-                "radius_minor",
-                params.get("radius2", 2.0),
-            )
-
-            if radius_major <= 0:
-                raise GeometryError(
-                    f"torus '{primitive_id}' のradius_majorは0より大きくしてください"
-                )
-
-            if radius_minor <= 0:
-                raise GeometryError(
-                    f"torus '{primitive_id}' のradius_minorは0より大きくしてください"
-                )
-
-            if radius_minor >= radius_major:
-                raise GeometryError(
-                    f"torus '{primitive_id}' はradius_minor < radius_majorで指定してください"
-                )
-
+            r1 = p.get("radius1", 10.0)
+            r2 = p.get("radius2", 2.0)
+            # cq.Workplane に .torus() は存在しない(実行して初めて判明したバグ。
+            # 前バージョンで発見・修正済みだったが、このtransform.py対応版に再度混入していた)。
+            # 正しくは cadquery.occ_impl.shapes.Solid.makeTorus() を使い、
+            # それをWorkplaneに包み直してからtransformを適用する。
             from cadquery.occ_impl.shapes import Solid
-
-            solid = Solid.makeTorus(
-                radius_major,
-                radius_minor,
-            )
-
-            shape = (
-                cq.Workplane("XY")
-                .newObject([solid])
-            )
-
-            return _apply_primitive_transform(shape, prim)
-
-        # --------------------------------------------------------------
-        # EXTRUDE
-        # --------------------------------------------------------------
+            solid = Solid.makeTorus(r1, r2)
+            shape = cq.Workplane("XY").newObject([solid])
+            return apply_transform(shape, prim)
 
         if ptype == "extrude":
-
-            sketch_shape = params.get(
-                "shape",
-                "rectangle",
-            )
-
-            distance = params.get(
-                "distance",
-                10.0,
-            )
-
-            if distance <= 0:
-                raise GeometryError(
-                    f"extrude '{primitive_id}' のdistanceは0より大きくしてください"
-                )
-
+            sketch_shape = p.get("shape", "rectangle")
+            distance = p.get("distance", 10.0)
             wp = cq.Workplane("XY")
-
-            # ----------------------------------------------------------
-            # rectangle
-            # ----------------------------------------------------------
-
             if sketch_shape == "rectangle":
+                shape = wp.rect(p["length"], p["width"]).extrude(distance)
+                return apply_transform(shape, prim)
+            elif sketch_shape == "circle":
+                shape = wp.circle(p["radius"]).extrude(distance)
+                return apply_transform(shape, prim)
+            else:
+                raise GeometryError(f"未対応のextrudeスケッチ形状: {sketch_shape!r}")
 
-                if "length" not in params:
-                    raise GeometryError(
-                        f"extrude '{primitive_id}' のrectangleにlengthがありません"
-                    )
-
-                if "width" not in params:
-                    raise GeometryError(
-                        f"extrude '{primitive_id}' のrectangleにwidthがありません"
-                    )
-
-                shape = (
-                    wp
-                    .rect(
-                        params["length"],
-                        params["width"],
-                    )
-                    .extrude(distance)
-                )
-
-                return _apply_primitive_transform(shape, prim)
-
-            # ----------------------------------------------------------
-            # circle
-            # ----------------------------------------------------------
-
-            if sketch_shape == "circle":
-
-                if "radius" not in params:
-                    raise GeometryError(
-                        f"extrude '{primitive_id}' のcircleにradiusがありません"
-                    )
-
-                shape = (
-                    wp
-                    .circle(params["radius"])
-                    .extrude(distance)
-                )
-
-                return _apply_primitive_transform(shape, prim)
-
-            raise GeometryError(
-                f"未対応のextrudeスケッチ形状: {sketch_shape!r}"
-            )
-
-        # --------------------------------------------------------------
-        # UNKNOWN
-        # --------------------------------------------------------------
-
-        raise GeometryError(
-            f"未対応のプリミティブ種別: {ptype!r}"
-        )
+        raise GeometryError(f"未対応のプリミティブ種別: {ptype!r}")
 
     except GeometryError:
         raise
-
+    except TransformError as e:
+        raise GeometryError(str(e)) from e
     except Exception as e:
-        raise GeometryError(
-            f"プリミティブ '{primitive_id}' ({ptype}) の構築に失敗しました: {e}"
-        ) from e
+        raise GeometryError(f"プリミティブ '{ptype}' の構築に失敗しました: {e}") from e
 
 
-# ======================================================================
-# Operations
-# ======================================================================
-
-
-def _apply_operation(
-    shapes: dict[str, cq.Workplane],
-    op: dict,
-) -> cq.Workplane:
-    """
-    1つのoperationを適用する。
-
-    対応:
-        union
-        subtract
-        cut
-        intersect
-        fillet
-        chamfer
-    """
-
+def _apply_operation(shapes: dict[str, cq.Workplane], op: dict, sketches: dict) -> cq.Workplane:
     kind = op.get("op")
-
-    if not kind:
-        raise GeometryError(
-            "operationにopがありません"
-        )
-
     try:
-
-        # ==============================================================
-        # FILLET / CHAMFER
-        # ==============================================================
+        # -------------------------------------------------
+        # extrude: sketch(2Dプロファイル) → Solid
+        # 仕様: Sketch → geometry → profile → extrude → Solid
+        # -------------------------------------------------
+        if kind == "extrude":
+            sketch_id = op.get("sketch")
+            distance = op.get("distance")
+            if sketch_id not in sketches:
+                raise GeometryError(f"sketch '{sketch_id}' が見つかりません")
+            if distance is None:
+                raise GeometryError("extrudeにはdistanceが必要です")
+            try:
+                return extrude_sketch(sketches[sketch_id], distance)
+            except SketchError as e:
+                raise GeometryError(str(e)) from e
 
         if kind in ("fillet", "chamfer"):
-
-            target_id = (
-                op.get("target")
-                or op.get("base")
-            )
-
-            if not target_id:
-                raise GeometryError(
-                    f"{kind} operationにtargetがありません"
-                )
-
+            target_id = op.get("target") or op.get("base")
             if target_id not in shapes:
-                raise GeometryError(
-                    f"対象形状 '{target_id}' が見つかりません"
-                )
-
+                raise GeometryError(f"対象形状 '{target_id}' が見つかりません")
             target_shape = shapes[target_id]
-
+            radius = op.get("radius", op.get("distance", 1.0))
             if kind == "fillet":
-
-                radius = op.get(
-                    "radius",
-                    1.0,
-                )
-
-                if radius <= 0:
-                    raise GeometryError(
-                        "filletのradiusは0より大きくしてください"
-                    )
-
-                return (
-                    target_shape
-                    .edges()
-                    .fillet(radius)
-                )
-
-            # chamfer
-
-            distance = op.get(
-                "distance",
-                op.get("radius", 1.0),
-            )
-
-            if distance <= 0:
-                raise GeometryError(
-                    "chamferのdistanceは0より大きくしてください"
-                )
-
-            return (
-                target_shape
-                .edges()
-                .chamfer(distance)
-            )
-
-        # ==============================================================
-        # BOOLEAN
-        # ==============================================================
+                return target_shape.edges().fillet(radius)
+            else:
+                return target_shape.edges().chamfer(radius)
 
         base_id = op.get("base")
         tool_id = op.get("tool")
-
-        if not base_id:
-            raise GeometryError(
-                f"operation '{kind}' にbaseがありません"
-            )
-
-        if not tool_id:
-            raise GeometryError(
-                f"operation '{kind}' にtoolがありません"
-            )
-
-        if base_id not in shapes:
-            raise GeometryError(
-                f"base '{base_id}' が形状一覧に見つかりません"
-            )
-
-        if tool_id not in shapes:
-            raise GeometryError(
-                f"tool '{tool_id}' が形状一覧に見つかりません"
-            )
+        if not base_id or base_id not in shapes:
+            raise GeometryError(f"base '{base_id}' が primitives に見つかりません")
+        if not tool_id or tool_id not in shapes:
+            raise GeometryError(f"tool '{tool_id}' が primitives に見つかりません")
 
         base = shapes[base_id]
         tool = shapes[tool_id]
 
-        # --------------------------------------------------------------
-        # UNION
-        # --------------------------------------------------------------
-
-        if kind == "union":
-
-            return base.union(tool)
-
-        # --------------------------------------------------------------
-        # SUBTRACT
-        # --------------------------------------------------------------
-        #
-        # 現在のJSON仕様は subtract。
-        #
-        # CadQuery APIではcutを使用する。
-        #
-        # cutも後方互換として許可する。
-        #
-        if kind in ("subtract", "cut"):
-
+        # "subtract"はJSON仕様側の呼び名。engine内部(CadQuery)の"cut"のエイリアスとして扱う。
+        if kind in ("cut", "subtract"):
             return base.cut(tool)
-
-        # --------------------------------------------------------------
-        # INTERSECT
-        # --------------------------------------------------------------
-
+        if kind == "union":
+            return base.union(tool)
         if kind == "intersect":
-
             return base.intersect(tool)
 
-        # --------------------------------------------------------------
-        # UNKNOWN
-        # --------------------------------------------------------------
-
-        raise GeometryError(
-            f"未対応の演算種別: {kind!r}"
-        )
+        raise GeometryError(f"未対応の演算種別: {kind!r}")
 
     except GeometryError:
         raise
-
     except Exception as e:
-        raise GeometryError(
-            f"演算 '{kind}' の適用に失敗しました: {e}"
-        ) from e
+        raise GeometryError(f"演算 '{kind}' の適用に失敗しました: {e}") from e
 
 
-# ======================================================================
-# Validation
-# ======================================================================
-
-
-def validate_solid(
-    result: cq.Workplane,
-) -> list[str]:
-    """
-    最終形状の最低限のバリデーション。
-
-    ここでは「失敗」ではなく「warning」として扱えるものを返す。
-    """
-
+def validate_solid(result: cq.Workplane) -> list[str]:
     warnings: list[str] = []
-
-    if result is None:
-        warnings.append(
-            "最終形状が生成されていません。"
-        )
-        return warnings
-
     try:
-
         solid = result.val()
-
         if not solid:
-            warnings.append(
-                "有効な立体(Solid)が生成されていません。"
-            )
+            warnings.append("有効な立体(Solid)が生成されていません。")
             return warnings
-
-        # --------------------------------------------------------------
-        # Volume
-        # --------------------------------------------------------------
-
         volume = solid.Volume()
-
         if volume <= 0:
-            warnings.append(
-                "体積が0以下です "
-                f"(volume={volume})。"
-                "Boolean演算の順序や形状の重なりを確認してください。"
-            )
-
-        # --------------------------------------------------------------
-        # Faces
-        # --------------------------------------------------------------
-
+            warnings.append(f"体積が0以下です(volume={volume})。ブーリアン演算の順序や形状の重なりを確認してください。")
         faces = result.faces().vals()
-
         if len(faces) == 0:
-            warnings.append(
-                "面が1つもありません。"
-                "形状が破綻している可能性があります。"
-            )
-
+            warnings.append("面が1つもありません。形状が破綻している可能性があります。")
     except Exception as e:
-
-        warnings.append(
-            f"バリデーション計算中に例外が発生しました: {e}"
-        )
-
+        warnings.append(f"バリデーション計算中に例外が発生しました: {e}")
     return warnings
 
 
-# ======================================================================
-# Build
-# ======================================================================
+def build_from_dict(param_dict: dict) -> BuildResult:
+    primitives_def = param_dict.get("primitives", [])
+    sketches_def = param_dict.get("sketches", [])
+    operations_def = param_dict.get("operations", [])
 
-
-def build_from_dict(
-    param_dict: dict,
-) -> BuildResult:
-    """
-    構造化されたCADパラメータ辞書から最終形状を生成する。
-
-    Parameters
-    ----------
-    param_dict:
-        JSONから読み込んだdict。
-
-    Returns
-    -------
-    BuildResult
-        最終形状とメタデータ。
-
-    Example
-    -------
-    {
-        "units": "mm",
-        "primitives": [
-            {
-                "id": "box",
-                "type": "box",
-                "params": {
-                    "width": 40,
-                    "depth": 30,
-                    "height": 20,
-                    "position": [10, 0, 0],
-                    "rotation": [0, 0, 45]
-                }
-            }
-        ]
-    }
-    """
-
-    if not isinstance(param_dict, dict):
-        raise GeometryError(
-            "CADパラメータはJSONオブジェクト(dict)で指定してください"
-        )
-
-    primitives_def = param_dict.get(
-        "primitives",
-        [],
-    )
-
-    operations_def = param_dict.get(
-        "operations",
-        [],
-    )
-
-    # ==============================================================
-    # Input validation
-    # ==============================================================
-
-    if not isinstance(primitives_def, list):
-        raise GeometryError(
-            "primitivesは配列で指定してください"
-        )
-
-    if not isinstance(operations_def, list):
-        raise GeometryError(
-            "operationsは配列で指定してください"
-        )
-
-    if not primitives_def:
-        raise GeometryError(
-            "primitivesが空です。最低1つの形状定義が必要です。"
-        )
-
-    # ==============================================================
-    # Build primitives
-    # ==============================================================
+    if not primitives_def and not sketches_def:
+        raise GeometryError("primitives/sketchesが両方空です。最低1つの形状定義が必要です。")
 
     shapes: dict[str, cq.Workplane] = {}
+    sketches: dict[str, cq.Sketch] = {}
 
+    # 0. 全sketchを構築(2Dプロファイルのみ。まだ立体化しない)
+    for sdef in sketches_def:
+        sid = sdef.get("id")
+        if not sid:
+            raise GeometryError("sketchにidがありません")
+        if sid in sketches:
+            raise GeometryError(f"sketch id '{sid}' が重複しています")
+        try:
+            sketches[sid] = build_profile(sdef)
+        except SketchError as e:
+            raise GeometryError(str(e)) from e
+
+    # 1. 全プリミティブを構築
     for prim in primitives_def:
+        pid = prim.get("id")
+        if not pid:
+            raise GeometryError("primitiveにidがありません")
+        if pid in shapes:
+            raise GeometryError(f"primitive id '{pid}' が重複しています")
+        shapes[pid] = _build_primitive(prim)
 
-        if not isinstance(prim, dict):
-            raise GeometryError(
-                "primitiveはオブジェクトで指定してください"
-            )
-
-        primitive_id = prim.get("id")
-
-        if not primitive_id:
-            raise GeometryError(
-                "primitiveにidがありません"
-            )
-
-        if primitive_id in shapes:
-            raise GeometryError(
-                f"primitive id '{primitive_id}' が重複しています"
-            )
-
-        shapes[primitive_id] = _build_primitive(
-            prim
-        )
-
-    # ==============================================================
-    # Apply operations
-    # ==============================================================
-
+    # 2. 演算処理(extrudeでsketchをshapesに合流させることもある)
     if not operations_def:
-
-        # operationがない場合、
-        # 最初のprimitiveを最終形状とする。
-        result_shape = next(
-            iter(shapes.values())
-        )
-
+        if not shapes:
+            raise GeometryError("operationsが無い場合、primitivesが最低1つ必要です(sketchだけではextrudeされません)")
+        result_shape = next(iter(shapes.values()))
     else:
-
-        result_shape: cq.Workplane | None = None
-
-        for index, op in enumerate(operations_def):
-
-            if not isinstance(op, dict):
-                raise GeometryError(
-                    f"operation[{index}]はオブジェクトで指定してください"
-                )
-
-            result_shape = _apply_operation(
-                shapes,
-                op,
-            )
-
-            result_id = op.get(
-                "result_id"
-            )
-
+        result_shape = None
+        for op in operations_def:
+            result_shape = _apply_operation(shapes, op, sketches)
+            result_id = op.get("result_id")
             if result_id:
-
-                if result_id in shapes:
-                    raise GeometryError(
-                        f"operation[{index}]: "
-                        f"result_id '{result_id}' は既に存在します"
-                    )
-
                 shapes[result_id] = result_shape
-
         if result_shape is None:
-            raise GeometryError(
-                "operationsは存在しますが、最終形状が生成されませんでした"
-            )
+            raise GeometryError("operationsの処理結果がありません")
 
-    # ==============================================================
-    # Validation
-    # ==============================================================
-
-    warnings = validate_solid(
-        result_shape
-    )
-
-    # ==============================================================
-    # Properties
-    # ==============================================================
+    warnings = validate_solid(result_shape)
 
     try:
-
         solid = result_shape.val()
-
-        if not solid:
-            raise GeometryError(
-                "最終形状のSolidを取得できません"
-            )
-
-        volume = round(
-            solid.Volume(),
-            6,
-        )
-
-        face_count = len(
-            result_shape
-            .faces()
-            .vals()
-        )
-
-        edge_count = len(
-            result_shape
-            .edges()
-            .vals()
-        )
-
-    except GeometryError:
-        raise
-
+        volume = round(solid.Volume(), 6)
+        face_count = len(result_shape.faces().vals())
+        edge_count = len(result_shape.edges().vals())
     except Exception as e:
-
-        raise GeometryError(
-            "最終形状のプロパティ "
-            "(体積・面数・エッジ数等) "
-            f"取得に失敗しました: {e}"
-        ) from e
+        raise GeometryError(f"最終形状のプロパティ（体積・面数等）取得に失敗しました: {e}") from e
 
     return BuildResult(
         solid=result_shape,
@@ -944,161 +247,39 @@ def build_from_dict(
     )
 
 
-# ======================================================================
-# Interference
-# ======================================================================
-
-
-def check_interference(
-    shape_a: cq.Workplane,
-    shape_b: cq.Workplane,
-) -> dict:
-    """
-    2つの形状の干渉をチェックする。
-
-    shape_a ∩ shape_b を計算し、
-    重複体積が 1e-6 mm^3 を超える場合に
-    interferes=True とする。
-    """
-
+def check_interference(shape_a: cq.Workplane, shape_b: cq.Workplane) -> dict:
     try:
-
-        overlap = shape_a.intersect(
-            shape_b
-        )
-
+        overlap = shape_a.intersect(shape_b)
         val = overlap.val()
-
-        if val:
-
-            volume = round(
-                val.Volume(),
-                6,
-            )
-
-        else:
-
-            volume = 0.0
-
-        return {
-            "interferes": volume > 1e-6,
-            "overlap_volume": volume,
-        }
-
+        volume = round(val.Volume(), 6) if val else 0.0
+        return {"interferes": volume > 1e-6, "overlap_volume": volume}
     except Exception as e:
-
-        raise GeometryError(
-            f"干渉チェック中にエラーが発生しました: {e}"
-        ) from e
+        raise GeometryError(f"干渉チェック中にエラーが発生しました: {e}") from e
 
 
-# ======================================================================
-# Mesh Export
-# ======================================================================
-
-
-def export_mesh(
-    result_shape: cq.Workplane,
-    tolerance: float = 0.1,
-) -> dict:
-    """
-    CAD形状を軽量三角形メッシュへ変換する。
-
-    Three.js等の外部表示側へ渡すことを想定。
-
-    tolerance:
-        メッシュ化精度。
-    """
-
+def export_mesh(result_shape: cq.Workplane, tolerance: float = 0.1) -> dict:
     try:
-
         solid = result_shape.val()
-
-        if not solid:
-            raise GeometryError(
-                "メッシュ化対象のSolidを取得できません"
-            )
-
-        vertices, triangles = (
-            solid.tessellate(tolerance)
-        )
-
+        vertices, triangles = solid.tessellate(tolerance)
         return {
-            "vertices": [
-                [
-                    round(v.x, 5),
-                    round(v.y, 5),
-                    round(v.z, 5),
-                ]
-                for v in vertices
-            ],
-            "triangles": [
-                list(t)
-                for t in triangles
-            ],
+            "vertices": [[round(v.x, 5), round(v.y, 5), round(v.z, 5)] for v in vertices],
+            "triangles": [list(t) for t in triangles],
             "vertex_count": len(vertices),
             "triangle_count": len(triangles),
         }
-
-    except GeometryError:
-        raise
-
     except Exception as e:
-
-        raise GeometryError(
-            f"メッシュエクスポート処理に失敗しました: {e}"
-        ) from e
+        raise GeometryError(f"メッシュエクスポート処理に失敗しました: {e}") from e
 
 
-# ======================================================================
-# STEP Export
-# ======================================================================
-
-
-def export_step(
-    result_shape: cq.Workplane,
-    filepath: str,
-) -> None:
-    """
-    STEPファイルへ出力する。
-    """
-
+def export_step(result_shape: cq.Workplane, filepath: str) -> None:
     try:
-
-        cq.exporters.export(
-            result_shape,
-            filepath,
-        )
-
+        cq.exporters.export(result_shape, filepath)
     except Exception as e:
-
-        raise GeometryError(
-            f"STEP出力に失敗しました: {e}"
-        ) from e
+        raise GeometryError(f"STEP出力に失敗しました: {e}") from e
 
 
-# ======================================================================
-# STL Export
-# ======================================================================
-
-
-def export_stl(
-    result_shape: cq.Workplane,
-    filepath: str,
-) -> None:
-    """
-    STLファイルへ出力する。
-    """
-
+def export_stl(result_shape: cq.Workplane, filepath: str) -> None:
     try:
-
-        cq.exporters.export(
-            result_shape,
-            filepath,
-        )
-
+        cq.exporters.export(result_shape, filepath)
     except Exception as e:
-
-        raise GeometryError(
-            f"STL出力に失敗しました: {e}"
-        ) from e
+        raise GeometryError(f"STL出力に失敗しました: {e}") from e

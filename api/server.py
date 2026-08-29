@@ -7,14 +7,12 @@ flow-mind / quick-ref との境界層。
 このファイルがエコシステム全体の"疎結合の切断面"。
 - 受け取るのは自然言語ではなく、既に構造化されたパラメータ辞書(JSON)のみ
 - 自然言語解析・音声認識・意図解釈は一切ここでは行わない
-  （それはflow-mind/quick-ref側の責務。CADコア側では二重実装しない）
 - 返すのは「幾何計算の結果」（体積・メッシュ・STEP等）のみ
 
 起動方法:
-  pip install fastapi uvicorn cadquery
+  pip install -r requirements.txt
   uvicorn api.server:app --reload --port 8420
 """
-
 from __future__ import annotations
 import os
 import uuid
@@ -31,7 +29,7 @@ from core.engine import (
     GeometryError,
 )
 
-app = FastAPI(title="CAD Core Engine", version="0.2.0")
+app = FastAPI(title="CAD Core Engine", version="0.3.0")
 
 CAD_TOKEN = os.environ.get("CAD_ENGINE_TOKEN", "")
 OUTPUT_DIR = os.environ.get("CAD_OUTPUT_DIR", "./output")
@@ -44,22 +42,31 @@ class Primitive(BaseModel):
     params: dict = Field(default_factory=dict)
 
 
+class Sketch(BaseModel):
+    """2D Sketch定義。JSON仕様: id/plane/geometry(line/circle/arc/rectangle/polygon)。"""
+    id: str
+    plane: str = "XY"
+    geometry: list[dict]
+
+
 class Operation(BaseModel):
     op: str
     base: str | None = None
     tool: str | None = None
     target: str | None = None
-    radius: float | None = None
+    sketch: str | None = None       # extrude操作で使う: 対象sketchのid
+    distance: float | None = None   # extrude/chamferで使う
+    radius: float | None = None     # fillet/chamferで使う
     result_id: str | None = None
 
 
 class BuildRequest(BaseModel):
     units: str = "mm"
-    primitives: list[Primitive]
+    primitives: list[Primitive] = Field(default_factory=list)
+    sketches: list[Sketch] = Field(default_factory=list)
     operations: list[Operation] = Field(default_factory=list)
 
 
-# --- TASK 3 用: 干渉チェックリクエストスキーマ ---
 class InterferenceRequest(BaseModel):
     units: str = "mm"
     part_a: BuildRequest
@@ -68,6 +75,7 @@ class InterferenceRequest(BaseModel):
 
 def _check_token(x_cad_token: str | None):
     if not CAD_TOKEN:
+        # トークン未設定は開発中のみ許容。本番運用前に必ず環境変数を設定すること。
         return
     if x_cad_token != CAD_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
@@ -75,6 +83,10 @@ def _check_token(x_cad_token: str | None):
 
 @app.post("/api/build")
 def build(req: BuildRequest, x_cad_token: str | None = Header(default=None)):
+    """
+    パラメータ辞書(primitives/sketches/operations)を受け取り、
+    形状を構築してメッシュ・メタデータを返す。Swift側でのプレビュー表示向け。
+    """
     _check_token(x_cad_token)
     try:
         result = build_from_dict(req.model_dump())
@@ -82,7 +94,6 @@ def build(req: BuildRequest, x_cad_token: str | None = Header(default=None)):
         raise HTTPException(status_code=422, detail=str(e))
 
     mesh = export_mesh(result.solid)
-
     return {
         "volume": result.volume,
         "face_count": result.face_count,
@@ -94,6 +105,7 @@ def build(req: BuildRequest, x_cad_token: str | None = Header(default=None)):
 
 @app.post("/api/build/export")
 def build_and_export(req: BuildRequest, fmt: str = "step", x_cad_token: str | None = Header(default=None)):
+    """パラメータ辞書を受け取り、形状を構築してファイル(STEP/STL)として出力する。"""
     _check_token(x_cad_token)
     if fmt not in ("step", "stl"):
         raise HTTPException(status_code=400, detail="fmt must be 'step' or 'stl'")
@@ -105,7 +117,6 @@ def build_and_export(req: BuildRequest, fmt: str = "step", x_cad_token: str | No
 
     filename = f"{uuid.uuid4().hex}.{fmt}"
     filepath = os.path.join(OUTPUT_DIR, filename)
-
     if fmt == "step":
         export_step(result.solid, filepath)
     else:
@@ -114,22 +125,18 @@ def build_and_export(req: BuildRequest, fmt: str = "step", x_cad_token: str | No
     return FileResponse(filepath, filename=filename)
 
 
-# --- TASK 3: 干渉チェックAPIエンドポイント ---
 @app.post("/api/interference")
 def interference(req: InterferenceRequest, x_cad_token: str | None = Header(default=None)):
-    """
-    2つの部品パラメータ(part_a, part_b)を受け取り、3D空間上での重なり（干渉）を判定する。
-    """
+    """2つの部品パラメータ(part_a, part_b)を受け取り、3D空間上での重なり（干渉）を判定する。"""
     _check_token(x_cad_token)
     try:
         shape_a = build_from_dict(req.part_a.model_dump()).solid
         shape_b = build_from_dict(req.part_b.model_dump()).solid
-        res = check_interference(shape_a, shape_b)
-        return res
+        return check_interference(shape_a, shape_b)
     except GeometryError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "engine": "cadquery/OCCT"}
+    return {"status": "ok", "engine": "cadquery/OCCT", "version": "0.3.0"}

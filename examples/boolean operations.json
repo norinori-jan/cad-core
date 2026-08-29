@@ -1,0 +1,31 @@
+{
+  "units": "mm",
+  "primitives": [
+    {
+      "id": "plate",
+      "type": "extrude",
+      "params": { "shape": "rectangle", "length": 60, "width": 40, "distance": 8 }
+    },
+    {
+      "id": "hole_1",
+      "type": "cylinder",
+      "params": { "radius": 4, "height": 20 }
+    },
+    {
+      "id": "hole_2",
+      "type": "cylinder",
+      "params": { "radius": 4, "height": 20 }
+    },
+    {
+      "id": "boss",
+      "type": "cylinder",
+      "params": { "radius": 8, "height": 15 }
+    }
+  ],
+  "operations": [
+    { "op": "subtract", "base": "plate", "tool": "hole_1", "result_id": "plate_h1" },
+    { "op": "subtract", "base": "plate_h1", "tool": "hole_2", "result_id": "plate_h2" },
+    { "op": "union", "base": "plate_h2", "tool": "boss", "result_id": "final_part" },
+    { "op": "intersect", "base": "final_part", "tool": "plate", "result_id": "clipped_check" }
+  ]
+}

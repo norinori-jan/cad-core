@@ -1,0 +1,14 @@
+{
+  "units": "mm",
+  "primitives": [
+    {
+      "id": "block",
+      "type": "box",
+      "params": { "width": 30, "depth": 30, "height": 30 }
+    }
+  ],
+  "operations": [
+    { "op": "fillet", "target": "block", "radius": 3, "result_id": "block_filleted" },
+    { "op": "chamfer", "target": "block_filleted", "distance": 2, "result_id": "final_part" }
+  ]
+}

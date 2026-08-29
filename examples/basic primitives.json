@@ -1,0 +1,24 @@
+{
+  "units": "mm",
+  "primitives": [
+    {
+      "id": "box_a",
+      "type": "box",
+      "params": { "width": 40, "depth": 40, "height": 20 }
+    },
+    {
+      "id": "sphere_a",
+      "type": "sphere",
+      "params": { "radius": 15 }
+    },
+    {
+      "id": "cylinder_a",
+      "type": "cylinder",
+      "params": { "radius": 10, "height": 30 }
+    }
+  ],
+  "operations": [
+    { "op": "union", "base": "box_a", "tool": "sphere_a", "result_id": "merged_a" },
+    { "op": "subtract", "base": "merged_a", "tool": "cylinder_a", "result_id": "final_part" }
+  ]
+}

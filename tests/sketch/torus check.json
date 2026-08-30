@@ -1,0 +1,19 @@
+{
+  "units": "mm",
+  "primitives": [
+    {
+      "id": "ring",
+      "type": "torus",
+      "params": { "radius_major": 25, "radius_minor": 5 }
+    },
+    {
+      "id": "cutter",
+      "type": "box",
+      "params": { "width": 60, "depth": 60, "height": 5 }
+    }
+  ],
+  "operations": [
+    { "op": "subtract", "base": "ring", "tool": "cutter", "result_id": "half_ring" },
+    { "op": "fillet", "target": "half_ring", "radius": 1, "result_id": "final_part" }
+  ]
+}

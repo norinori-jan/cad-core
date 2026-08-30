@@ -1,0 +1,19 @@
+{
+  "units": "mm",
+  "primitives": [
+    {
+      "id": "base_extrude",
+      "type": "extrude",
+      "params": { "shape": "rectangle", "length": 50, "width": 50, "distance": 10 }
+    },
+    {
+      "id": "top_cone",
+      "type": "cone",
+      "params": { "radius1": 15, "radius2": 5, "height": 20 }
+    }
+  ],
+  "operations": [
+    { "op": "union", "base": "base_extrude", "tool": "top_cone", "result_id": "merged" },
+    { "op": "fillet", "target": "merged", "radius": 1.5, "result_id": "final_part" }
+  ]
+}

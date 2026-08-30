@@ -1,0 +1,16 @@
+{
+  "_comment": "期待挙動: SketchError(radiusは正の値である必要があります)。radius=0とradius=-5の2パターンを両方試してください(片方ずつコメントアウトして実行)。",
+  "sketches": [
+    {
+      "id": "s_zero",
+      "plane": "XY",
+      "geometry": [
+        {"type": "circle", "center": [0, 0], "radius": 0}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_zero", "distance": 5, "result_id": "final"}
+  ]
+}

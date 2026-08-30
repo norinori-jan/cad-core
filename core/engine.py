@@ -20,6 +20,29 @@ from .sketch import (
     build_profile,
     extrude_sketch,
 )
+from .selection import (
+    SelectionError,
+    selection,
+    resolve_selections,
+)
+
+try:
+    from cadquery.selectors import Selector as _CQSelector
+except ImportError:  # cadqueryのバージョン差異に備えたフォールバック
+    from cadquery import Selector as _CQSelector
+
+
+class _ExactShapeSelector(_CQSelector):
+    """
+    resolve_selections()で得た特定のEdge/Face個体だけを残すSelector。
+    fillet/chamferで「全edgeではなく指定したedgeだけ」を対象にするために使う。
+    """
+
+    def __init__(self, wanted):
+        self._wanted = list(wanted)
+
+    def filter(self, objectList):
+        return [o for o in objectList if any(o.isSame(w) for w in self._wanted)]
 
 
 class GeometryError(Exception):
@@ -107,6 +130,26 @@ def _build_primitive(prim: dict) -> cq.Workplane:
         raise GeometryError(f"プリミティブ '{ptype}' の構築に失敗しました: {e}") from e
 
 
+def _resolve_edge_selector(target_shape: cq.Workplane, edge_specs: list) -> _CQSelector:
+    """
+    operationの"edges"指定(int index、または{"kind":..,"index":..}のdict)を
+    selection.pyのSelectionResultへ変換し、実体解決してSelectorにまとめる。
+    """
+    selections = []
+    for spec in edge_specs:
+        if isinstance(spec, int):
+            selections.append(selection("edge", spec))
+        elif isinstance(spec, dict):
+            if "index" not in spec:
+                raise GeometryError(f"edges指定にindexがありません: {spec!r}")
+            selections.append(selection(spec.get("kind", "edge"), spec["index"]))
+        else:
+            raise GeometryError(f"edges指定の形式が不正です: {spec!r}")
+
+    resolved = resolve_selections(target_shape, selections)
+    return _ExactShapeSelector(resolved)
+
+
 def _apply_operation(shapes: dict[str, cq.Workplane], op: dict, sketches: dict) -> cq.Workplane:
     kind = op.get("op")
     try:
@@ -121,6 +164,8 @@ def _apply_operation(shapes: dict[str, cq.Workplane], op: dict, sketches: dict) 
                 raise GeometryError(f"sketch '{sketch_id}' が見つかりません")
             if distance is None:
                 raise GeometryError("extrudeにはdistanceが必要です")
+            if distance == 0:
+                raise GeometryError("extrudeのdistanceは0以外である必要があります(正:+Z方向、負:-Z方向)")
             try:
                 return extrude_sketch(sketches[sketch_id], distance)
             except SketchError as e:
@@ -132,10 +177,22 @@ def _apply_operation(shapes: dict[str, cq.Workplane], op: dict, sketches: dict) 
                 raise GeometryError(f"対象形状 '{target_id}' が見つかりません")
             target_shape = shapes[target_id]
             radius = op.get("radius", op.get("distance", 1.0))
-            if kind == "fillet":
-                return target_shape.edges().fillet(radius)
+
+            edge_specs = op.get("edges")
+            if edge_specs:
+                try:
+                    edge_selector = _resolve_edge_selector(target_shape, edge_specs)
+                except SelectionError as e:
+                    raise GeometryError(str(e)) from e
+                target_edges = target_shape.edges(edge_selector)
             else:
-                return target_shape.edges().chamfer(radius)
+                # "edges"未指定なら後方互換で全edgeを対象にする(従来の挙動)
+                target_edges = target_shape.edges()
+
+            if kind == "fillet":
+                return target_edges.fillet(radius)
+            else:
+                return target_edges.chamfer(radius)
 
         base_id = op.get("base")
         tool_id = op.get("tool")
@@ -182,6 +239,10 @@ def validate_solid(result: cq.Workplane) -> list[str]:
 
 
 def build_from_dict(param_dict: dict) -> BuildResult:
+    units = param_dict.get("units", "mm")
+    if units != "mm":
+        raise GeometryError(f"現在はunits='mm'のみ対応しています(指定値: {units!r})")
+
     primitives_def = param_dict.get("primitives", [])
     sketches_def = param_dict.get("sketches", [])
     operations_def = param_dict.get("operations", [])
@@ -190,7 +251,7 @@ def build_from_dict(param_dict: dict) -> BuildResult:
         raise GeometryError("primitives/sketchesが両方空です。最低1つの形状定義が必要です。")
 
     shapes: dict[str, cq.Workplane] = {}
-    sketches: dict[str, cq.Sketch] = {}
+    sketches: dict[str, cq.Face] = {}  # build_profile()がcq.Faceを返す仕様に変更(sketch.py参照)
 
     # 0. 全sketchを構築(2Dプロファイルのみ。まだ立体化しない)
     for sdef in sketches_def:
@@ -223,8 +284,9 @@ def build_from_dict(param_dict: dict) -> BuildResult:
         for op in operations_def:
             result_shape = _apply_operation(shapes, op, sketches)
             result_id = op.get("result_id")
-            if result_id:
-                shapes[result_id] = result_shape
+            if not result_id:
+                raise GeometryError(f"operation '{op.get('op')}' にはresult_idが必要です")
+            shapes[result_id] = result_shape
         if result_shape is None:
             raise GeometryError("operationsの処理結果がありません")
 

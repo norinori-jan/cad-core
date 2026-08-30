@@ -1,0 +1,10 @@
+{
+  "_comment": "box(30x30x30)のedge index=0(長さ30、handoff文書\u00a79で検証済み)のみをradius=2でfillet。理論値: volume=30^3-2^2*(1-pi/4)*30=26974.247780(概算、丸め誤差あり)",
+  "primitives": [
+    {"id": "box1", "type": "box", "params": {"width": 30, "depth": 30, "height": 30}}
+  ],
+  "sketches": [],
+  "operations": [
+    {"op": "fillet", "target": "box1", "radius": 2, "edges": [0], "result_id": "box1_filleted"}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "_comment": "line1本+arc1本(半円)で閉じるDシェイプ。理論値: area=0.5*pi*r^2=0.5*pi*100=157.079633..., volume=area*8=1256.637061...",
+  "sketches": [
+    {
+      "id": "s_d",
+      "plane": "XY",
+      "geometry": [
+        {"type": "line", "start": [-10, 0], "end": [10, 0]},
+        {"type": "arc", "center": [0, 0], "radius": 10, "start_angle": 0, "end_angle": 180}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_d", "distance": 8, "result_id": "final"}
+  ]
+}

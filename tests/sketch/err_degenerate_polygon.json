@@ -1,0 +1,16 @@
+{
+  "_comment": "期待挙動: SketchError(polygonの面積が実質ゼロ)。3点が一直線上。",
+  "sketches": [
+    {
+      "id": "s_degenerate",
+      "plane": "XY",
+      "geometry": [
+        {"type": "polygon", "points": [[0, 0], [5, 5], [10, 10]]}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_degenerate", "distance": 5, "result_id": "final"}
+  ]
+}

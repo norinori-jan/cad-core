@@ -1,0 +1,18 @@
+{
+  "_comment": "outer rectangle(60x30) + 2つの独立したcircle穴(radius3、非重複)。理論値: area=60*30-2*pi*9=1743.451332..., volume=area*4=6973.805329...",
+  "sketches": [
+    {
+      "id": "s_multi",
+      "plane": "XY",
+      "geometry": [
+        {"type": "rectangle", "center": [0, 0], "width": 60, "height": 30},
+        {"type": "circle", "center": [-15, 0], "radius": 3},
+        {"type": "circle", "center": [15, 0], "radius": 3}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_multi", "distance": 4, "result_id": "final"}
+  ]
+}

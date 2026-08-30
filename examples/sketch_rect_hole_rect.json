@@ -1,0 +1,17 @@
+{
+  "_comment": "outer rectangle(40x40) + inner rectangle穴(10x10)。理論値: area=40*40-10*10=1500, volume=area*6=9000",
+  "sketches": [
+    {
+      "id": "s_rr",
+      "plane": "XY",
+      "geometry": [
+        {"type": "rectangle", "center": [0, 0], "width": 40, "height": 40},
+        {"type": "rectangle", "center": [0, 0], "width": 10, "height": 10}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_rr", "distance": 6, "result_id": "final"}
+  ]
+}

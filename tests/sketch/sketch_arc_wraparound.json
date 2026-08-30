@@ -1,0 +1,18 @@
+{
+  "_comment": "arcのwraparound(350°→10°)テスト。中心角20°の扇形。理論値: area=0.5*r^2*theta_rad=0.5*100*(20*pi/180)=17.453293..., volume=area*5=87.266463...",
+  "sketches": [
+    {
+      "id": "s_pie",
+      "plane": "XY",
+      "geometry": [
+        {"type": "arc", "center": [0, 0], "radius": 10, "start_angle": 350, "end_angle": 10},
+        {"type": "line", "start": [9.848078, 1.736482], "end": [0, 0]},
+        {"type": "line", "start": [0, 0], "end": [9.848078, -1.736482]}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_pie", "distance": 5, "result_id": "final"}
+  ]
+}

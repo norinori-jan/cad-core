@@ -1,0 +1,18 @@
+{
+  "_comment": "期待挙動: SketchError(分岐検出)。原点(0,0)に3本のlineが集まるY字路。",
+  "sketches": [
+    {
+      "id": "s_branch",
+      "plane": "XY",
+      "geometry": [
+        {"type": "line", "start": [0, 0], "end": [10, 0]},
+        {"type": "line", "start": [0, 0], "end": [0, 10]},
+        {"type": "line", "start": [0, 0], "end": [-10, 0]}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_branch", "distance": 5, "result_id": "final"}
+  ]
+}

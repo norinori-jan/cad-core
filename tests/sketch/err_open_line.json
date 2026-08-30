@@ -1,0 +1,17 @@
+{
+  "_comment": "期待挙動: SketchError(閉じていない/未接続の端点)。line2本のみでループが閉じない。",
+  "sketches": [
+    {
+      "id": "s_open",
+      "plane": "XY",
+      "geometry": [
+        {"type": "line", "start": [0, 0], "end": [10, 0]},
+        {"type": "line", "start": [10, 0], "end": [10, 10]}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_open", "distance": 5, "result_id": "final"}
+  ]
+}

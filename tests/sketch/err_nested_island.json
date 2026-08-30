@@ -1,0 +1,18 @@
+{
+  "_comment": "期待挙動: SketchError(3階層以上のネスト)。outer rect(40x40) > hole rect(20x20) > island circle(radius5)。",
+  "sketches": [
+    {
+      "id": "s_island",
+      "plane": "XY",
+      "geometry": [
+        {"type": "rectangle", "center": [0, 0], "width": 40, "height": 40},
+        {"type": "rectangle", "center": [0, 0], "width": 20, "height": 20},
+        {"type": "circle", "center": [0, 0], "radius": 5}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_island", "distance": 5, "result_id": "final"}
+  ]
+}

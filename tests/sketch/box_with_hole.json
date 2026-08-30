@@ -1,0 +1,19 @@
+{
+  "_comment": "flow-mind/quick-ref側が「10cm×10cm×10cmの箱に、半径3cmの穴をZ軸方向に貫通させて」のような自然言語からこの形に変換して渡してくる想定。単位はmm統一。",
+  "units": "mm",
+  "primitives": [
+    {
+      "id": "base",
+      "type": "box",
+      "params": { "length": 100, "width": 100, "height": 100 }
+    },
+    {
+      "id": "hole",
+      "type": "cylinder",
+      "params": { "radius": 30, "height": 120 }
+    }
+  ],
+  "operations": [
+    { "op": "cut", "base": "base", "tool": "hole", "result_id": "part1" }
+  ]
+}

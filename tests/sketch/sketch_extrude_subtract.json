@@ -1,0 +1,19 @@
+{
+  "_comment": "Sketch → profile → extrude → Solid → boolean(subtract) の全経路を通す実例。円形profileを押し出して板を作り、既存3D primitiveの円柱で穴を開ける。",
+  "sketches": [
+    {
+      "id": "sk1",
+      "plane": "XY",
+      "geometry": [
+        {"type": "circle", "center": [0, 0], "radius": 15}
+      ]
+    }
+  ],
+  "primitives": [
+    {"id": "hole", "type": "cylinder", "params": {"radius": 5, "height": 30}}
+  ],
+  "operations": [
+    {"op": "extrude", "sketch": "sk1", "distance": 10, "result_id": "plate"},
+    {"op": "subtract", "base": "plate", "tool": "hole", "result_id": "final"}
+  ]
+}

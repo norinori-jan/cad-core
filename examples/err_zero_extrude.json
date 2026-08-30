@@ -1,0 +1,16 @@
+{
+  "_comment": "期待挙動: GeometryError(extrudeのdistanceは0以外である必要があります)。",
+  "sketches": [
+    {
+      "id": "s_ok",
+      "plane": "XY",
+      "geometry": [
+        {"type": "circle", "center": [0, 0], "radius": 5}
+      ]
+    }
+  ],
+  "primitives": [],
+  "operations": [
+    {"op": "extrude", "sketch": "s_ok", "distance": 0, "result_id": "final"}
+  ]
+}

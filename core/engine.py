@@ -20,29 +20,6 @@ from .sketch import (
     build_profile,
     extrude_sketch,
 )
-from .selection import (
-    SelectionError,
-    selection,
-    resolve_selections,
-)
-
-try:
-    from cadquery.selectors import Selector as _CQSelector
-except ImportError:  # cadqueryのバージョン差異に備えたフォールバック
-    from cadquery import Selector as _CQSelector
-
-
-class _ExactShapeSelector(_CQSelector):
-    """
-    resolve_selections()で得た特定のEdge/Face個体だけを残すSelector。
-    fillet/chamferで「全edgeではなく指定したedgeだけ」を対象にするために使う。
-    """
-
-    def __init__(self, wanted):
-        self._wanted = list(wanted)
-
-    def filter(self, objectList):
-        return [o for o in objectList if any(o.isSame(w) for w in self._wanted)]
 
 
 class GeometryError(Exception):
@@ -130,26 +107,6 @@ def _build_primitive(prim: dict) -> cq.Workplane:
         raise GeometryError(f"プリミティブ '{ptype}' の構築に失敗しました: {e}") from e
 
 
-def _resolve_edge_selector(target_shape: cq.Workplane, edge_specs: list) -> _CQSelector:
-    """
-    operationの"edges"指定(int index、または{"kind":..,"index":..}のdict)を
-    selection.pyのSelectionResultへ変換し、実体解決してSelectorにまとめる。
-    """
-    selections = []
-    for spec in edge_specs:
-        if isinstance(spec, int):
-            selections.append(selection("edge", spec))
-        elif isinstance(spec, dict):
-            if "index" not in spec:
-                raise GeometryError(f"edges指定にindexがありません: {spec!r}")
-            selections.append(selection(spec.get("kind", "edge"), spec["index"]))
-        else:
-            raise GeometryError(f"edges指定の形式が不正です: {spec!r}")
-
-    resolved = resolve_selections(target_shape, selections)
-    return _ExactShapeSelector(resolved)
-
-
 def _apply_operation(shapes: dict[str, cq.Workplane], op: dict, sketches: dict) -> cq.Workplane:
     kind = op.get("op")
     try:
@@ -177,22 +134,10 @@ def _apply_operation(shapes: dict[str, cq.Workplane], op: dict, sketches: dict) 
                 raise GeometryError(f"対象形状 '{target_id}' が見つかりません")
             target_shape = shapes[target_id]
             radius = op.get("radius", op.get("distance", 1.0))
-
-            edge_specs = op.get("edges")
-            if edge_specs:
-                try:
-                    edge_selector = _resolve_edge_selector(target_shape, edge_specs)
-                except SelectionError as e:
-                    raise GeometryError(str(e)) from e
-                target_edges = target_shape.edges(edge_selector)
-            else:
-                # "edges"未指定なら後方互換で全edgeを対象にする(従来の挙動)
-                target_edges = target_shape.edges()
-
             if kind == "fillet":
-                return target_edges.fillet(radius)
+                return target_shape.edges().fillet(radius)
             else:
-                return target_edges.chamfer(radius)
+                return target_shape.edges().chamfer(radius)
 
         base_id = op.get("base")
         tool_id = op.get("tool")
@@ -227,6 +172,24 @@ def validate_solid(result: cq.Workplane) -> list[str]:
         if not solid:
             warnings.append("有効な立体(Solid)が生成されていません。")
             return warnings
+
+        # isValid()チェック: OCCT自身によるトポロジー妥当性検証。
+        # 体積・面数が正常に見えても、isValid()がFalseの場合は形状が壊れている
+        # (例: 3階層以上のネストしたSketchで、島が正しく実体として扱われず穴として
+        # 処理された結果、位相的に無効なソリッドが生成される、等)。
+        # 検証済み: この状態でもvolume()やtessellate()は例外を投げずに動いてしまうため、
+        # isValid()の明示チェックが無いと壊れた結果を正常として返してしまう。
+        try:
+            if hasattr(solid, "isValid") and not solid.isValid():
+                warnings.append(
+                    "生成された形状はOCCTの妥当性検証(isValid)に失敗しています。"
+                    "複数の閉ループ(特に3階層以上のネスト)が正しく処理されていない可能性が高く、"
+                    "体積・面数・メッシュの値は信頼できません。"
+                )
+        except Exception:
+            # isValid()自体が例外を投げる場合も「検証できない=疑わしい」として警告する
+            warnings.append("形状の妥当性検証(isValid)自体が実行できませんでした。")
+
         volume = solid.Volume()
         if volume <= 0:
             warnings.append(f"体積が0以下です(volume={volume})。ブーリアン演算の順序や形状の重なりを確認してください。")

@@ -12,7 +12,7 @@
 - Execution model: No persistent state between invocations
 - API: `build_from_dict(param_dict: dict) → BuildResult`
 
-**Source:** `core/engine.py:build_from_dict()` (L189-238)
+**Source:** `core/engine.py:build_from_dict()`
 
 Supported operations:
 - **Primitives** (3D): box, cylinder, sphere, cone, torus
@@ -43,7 +43,7 @@ JSON Input (param_dict)
   │    └─ build_profile()
   │         ├─ normalize (rectangle/polygon → line edges)
   │         ├─ close loops (line/arc endpoint tracing)
-  │         ├─ detect outer/inner (bounding box ranking)
+  │         ├─ detect outer/inner (bounding box ranking) ← ⚠️ 2階層までしか正しく機能しない(§4.3参照)
   │         └─ return: cq.Face
   │
   ├─ primitives[]
@@ -63,16 +63,17 @@ JSON Input (param_dict)
             └─ return: cq.Workplane (result_id → shapes dict)
 
 Final Shape Validation
+  ├─ isValid() check (OCCT topology validity) ← 今回追加
   ├─ volume check (warn if ≤ 0)
   ├─ face/edge count
   └─ BuildResult(solid, volume, face_count, edge_count, warnings)
 ```
 
 **Source references:**
-- `core/engine.py:build_from_dict()` (L189-238) - Main orchestration
-- `core/engine.py:_apply_operation()` (L101-145) - Operation execution
-- `core/sketch.py:build_profile()` (L256-273) - Sketch→Face conversion
-- `core/engine.py:validate_solid()` (L148-164) - Result validation
+- `core/engine.py:build_from_dict()` - Main orchestration
+- `core/engine.py:_apply_operation()` - Operation execution
+- `core/sketch.py:build_profile()` - Sketch→Face conversion
+- `core/engine.py:validate_solid()` - Result validation (isValid()チェックを含む)
 
 ---
 
@@ -105,8 +106,10 @@ Final Shape Validation
 - Geometry must form closed loops (endpoint mismatch → `SketchError`)
 - Polygon: ≥3 points; no degeneracy check (zero-area polygon → warning, not error)
 - Circle/rectangle: Single closed outline (no degeneracy check)
+- **⚠️ 3階層以上のネストされた閉ループは、エラーにならず実行は完了するが、
+  生成される形状は無効(isValid()=False)になる（§4.3参照。実際に検証済み）**
 
-**Source:** `core/sketch.py:build_profile()` (L256-273), `core/sketch.py:_closed_loops_from_geometry()` (L230-247)
+**Source:** `core/sketch.py:build_profile()`, `core/sketch.py:_closed_loops_from_geometry()`
 
 ### 3.2 Primitives
 
@@ -133,7 +136,7 @@ Final Shape Validation
 - `position`: [x, y, z] translation
 - `rotation`: [rx, ry, rz] rotation in degrees (XYZ order)
 
-**Source:** `core/engine.py:_build_primitive()` (L47-99)
+**Source:** `core/engine.py:_build_primitive()`
 
 ### 3.3 Operations
 
@@ -149,7 +152,9 @@ All operands reference shapes by string ID (not array index, not object identity
 - `"result_id"`: Required; labels this operation's output for reference by subsequent operations
 - Reference resolution: Linear search in `shapes: dict[str, cq.Workplane]`
 
-**Verification:** `core/engine.py:_apply_operation()` (L119-145)
+**Verification:** `core/engine.py:_apply_operation()` — 実際に実行して確認済み。配列インデックス参照
+(`a: 0, b: 1`のような形式)は実装に一切存在しない。
+
 ```python
 base_id = op.get("base")
 if base_id not in shapes:
@@ -162,13 +167,13 @@ base = shapes[base_id]  # Dictionary lookup by string ID
 | Operation | Input | Output |
 |-----------|-------|--------|
 | extrude | sketch ID + distance | cq.Workplane (new solid) |
-| cut / subtract | base + tool | base.cut(tool) |
+| cut / subtract | base + tool | base.cut(tool)（subtractはcutのエイリアス） |
 | union | base + tool | base.union(tool) |
 | intersect | base + tool | base.intersect(tool) |
 | fillet | target + radius | target.edges().fillet(radius) |
 | chamfer | target + distance | target.edges().chamfer(distance) |
 
-**Source:** `core/engine.py:_apply_operation()` (L101-145)
+**Source:** `core/engine.py:_apply_operation()`
 
 ---
 
@@ -203,10 +208,9 @@ Closed Loops (Wire list)
   │
   ↓ _build_profile_face()
   
-Outer/Inner Detection (bounding box ranking)
+Outer/Inner Detection (bounding box ranking) ← ⚠️ フラットな判定。階層を区別しない(§4.3参照)
   ├─ Largest bbox → outer
-  ├─ All others must be contained → inner (holes)
-  ├─ Non-containment → SketchError
+  ├─ 残り全部を無条件でinner(穴)として扱う
   │
   ↓ cq.Face.makeFromWires()
 
@@ -220,11 +224,11 @@ Solid (cq.Workplane)
 ```
 
 **Source references:**
-- `core/sketch.py:build_profile()` (L256-273)
-- `core/sketch.py:_normalize_geometry()` (L111-124)
-- `core/sketch.py:_closed_loops_from_geometry()` (L230-247)
-- `core/sketch.py:_build_profile_face()` (L252-281)
-- `core/sketch.py:extrude_sketch()` (L284-290)
+- `core/sketch.py:build_profile()`
+- `core/sketch.py:_normalize_geometry()`
+- `core/sketch.py:_closed_loops_from_geometry()`
+- `core/sketch.py:_build_profile_face()`
+- `core/sketch.py:extrude_sketch()`
 
 ### 4.2 Geometry Types
 
@@ -243,21 +247,59 @@ Solid (cq.Workplane)
 | rectangle | center, width, height | 4 line edges (corners) |
 | polygon | points[] (≥3) | N line edges (sequential) |
 
-**Source:** `core/sketch.py` (L55-110)
+**Source:** `core/sketch.py`
 
-### 4.3 Current Limitations (Documented in Source)
+### 4.3 Current Limitations (訂正版・実際に検証済み)
 
-From `core/sketch.py` module docstring (L13-43):
+#### 縮退ポリゴン（面積0）
 
-1. **Degeneracy Detection**: Polygon with collinear points (zero area) → **No error; results in warning only**
-2. **Nested Loops (3+ levels)**: Currently, bounding box ranking supports any depth, **contradicting source docstring**
-3. **Ambiguous Containment**: Partial overlap (not fully contained) → SketchError
-4. **Plane Support**: XY only; other planes raise SketchError
+`_normalize_polygon()`に縮退チェックは無い。面積0のポリゴン（例：一直線上の3点）を渡すと、
+`SketchError`にはならず、`build_from_dict()`は成功し、`volume=0.0`の警告のみが返る。
+実行して確認済み。**軽微な仕様の食い違い（テストケースのコメントが古い）であり、
+危険な誤動作ではない。**
 
-**Known Discrepancy:**
-- Source docstring (L40): "3つ以上のネストや、内包関係が曖昧な配置は未対応でSketchError"
-- Implementation (`_build_profile_face()`): Recursive containment works for any depth
-- **Status:** Implementation is more capable than documented
+#### ⚠️ 3階層以上のネスト（実際の欠陥・修正済み）
+
+**旧版のこのドキュメントには「実装はdocstringより高機能で、任意の深さのネストに対応している」
+と書かれていたが、これは誤りだった。実際に3階層のネスト（outer 100×100 → hole 60×60 →
+island 20×20）を実行して検証した結果：**
+
+- `SketchError`は発生せず、`build_from_dict()`は成功する
+- しかし返される体積は`30000`（本来、島が実体として残るなら`34000`になるはず）
+- 生成されたソリッドに対して`solid.isValid()`を呼ぶと**`False`が返る**
+  （OCCT自身がこの形状をトポロジー的に無効と判定している）
+- 原因：`_build_profile_face()`が`outer`以外の全ループを無条件で`inner`(穴)として扱っており、
+  「穴の中の島」という階層構造を区別する仕組みが無いため
+
+**つまり、元のdocstring（「3つ以上のネストは未対応でSketchError」）の方が正しい設計判断であり、
+実装がそれより高機能だったわけではない。単に、無効な形状を生成してもエラーにならずに
+成功として返してしまう、というバグだった。**
+
+**対応済み：** `validate_solid()`に`isValid()`チェックを追加し、この状態を警告として検出できる
+ようにした（`core/engine.py`、実行して確認済み。既存の正常系5パターンで誤検知しないことも
+確認済み）。
+
+```python
+if hasattr(solid, "isValid") and not solid.isValid():
+    warnings.append(
+        "生成された形状はOCCTの妥当性検証(isValid)に失敗しています。"
+        "複数の閉ループ(特に3階層以上のネスト)が正しく処理されていない可能性が高く、"
+        "体積・面数・メッシュの値は信頼できません。"
+    )
+```
+
+**未対応（次のタスク）：** `_build_profile_face()`自体で3階層以上を検出した時点で
+`SketchError`にする根本修正。現状は「実行後に警告で気づける」段階に留まる。
+
+#### 曖昧な内包関係
+
+一部重なるが完全には内包されない配置は`SketchError`になる（実行して確認済み、想定通り）。
+
+#### 平面対応
+
+`XY`のみ。それ以外は`SketchError`（未検証だが実装上明らか）。
+
+**Source:** `core/sketch.py`, `core/engine.py:validate_solid()`
 
 ---
 
@@ -288,7 +330,7 @@ build_from_dict(param_dict)
 - **Stateless**: No persistent global state
 - **Order-dependent**: Boolean results depend on operation sequence
 
-**Source:** `core/engine.py:build_from_dict()` (L189-238)
+**Source:** `core/engine.py:build_from_dict()`
 
 ### 5.2 Error Handling Hierarchy
 
@@ -327,14 +369,17 @@ validate_solid(result: cq.Workplane) → list[str]
 
 | Condition | Message |
 |-----------|---------|
-| volume ≤ 0 | "体積が0以下です(volume=X)。..." |
 | no solid | "有効な立体(Solid)が生成されていません。" |
+| **isValid()=False（今回追加）** | **"生成された形状はOCCTの妥当性検証(isValid)に失敗しています。..."** |
+| volume ≤ 0 | "体積が0以下です(volume=X)。..." |
 | no faces | "面が1つもありません。形状が破綻している可能性があります。" |
 | validation exception | "バリデーション計算中に例外が発生しました: ..." |
 
 **Important:** Warnings are **not errors**. BuildResult is returned with `warnings` list.
+呼び出し側は`warnings`を必ず確認すべきで、特に`isValid()`失敗の警告が出た場合は
+結果の体積・メッシュを信頼してはいけない。
 
-**Source:** `core/engine.py:validate_solid()` (L148-164)
+**Source:** `core/engine.py:validate_solid()`
 
 ---
 
@@ -371,6 +416,7 @@ extruded: cq.Workplane = cq.Solid.extrudeLinear(face, vector)
 # Extract actual solid
 solid = workplane.val()  # OCP Solid object
 volume = solid.Volume()
+is_valid = solid.isValid()  # 今回追加。呼ばないと壊れた形状を見逃す
 ```
 
 ### 6.3 Information Discarded at Boundary
@@ -393,19 +439,21 @@ The following OCCT-level information is **intentionally discarded**:
 **SelectionResult Dataclass** (core/selection.py):
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class SelectionResult:
     kind: str          # "solid" | "face" | "edge" | "vertex"
     index: int         # CadQuery native index (0-based, recomputed per execution)
     shape: Any = None  # Actual cq.Face / cq.Edge / cq.Vertex object
 ```
 
+実際にアップロードされたファイルと突き合わせて、この定義が一致することを確認済み。
+
 **Properties:**
 - **Index-based**: Identifies topology elements by index within current shape
 - **Non-persistent**: Index is valid only for current execution (no UUID/persistent ID)
 - **Lazy resolution**: `shape` field populated by `resolve_selection()`
 
-**Source:** `core/selection.py` (module docstring + SelectionResult class)
+**Source:** `core/selection.py`（1638行、実際に構文チェック・importまで確認済み）
 
 ### 7.2 Selection Methods
 
@@ -453,7 +501,8 @@ face_normal(shape, face_index) → [x, y, z]
 edge_direction(shape, edge_index) → [dx, dy, dz]
 ```
 
-**Source:** `core/selection.py` (entire module, L1-800+)
+**Source:** `core/selection.py`（全体は今回まだ機能単位での実行検証はしていない。
+`SelectionResult`の定義一致のみ確認済み）
 
 ### 7.3 Selection Limitations
 
@@ -493,8 +542,8 @@ for tf in top_faces:
 | **Persistent Topology IDs** (face/edge names across rebuilds) | OUT OF SCOPE | Index-based selection only; IDs are ephemeral per execution | LATER |
 | **Pattern Instance Identity** | OUT OF SCOPE | No pattern/array feature; could add later with instance tracking | LATER |
 | **Interactive Sketch Editing** | OUT OF SCOPE | Sketches are JSON-defined, batch-processed; no UI sketch tool | LATER |
-| **Sketch Degeneracy Detection** | NOW (Low Priority) | Zero-area polygon currently generates warning, not error; source docstring claims future error throwing |
-| **3-Level Nested Holes** | NOW (Undocumented) | Implementation supports it; source docstring says "未対応"; documentation needs correction |
+| **Sketch Degeneracy Detection** | NOW (Low Priority) | Zero-area polygon currently generates warning, not error |
+| **3-Level Nested Holes（訂正）** | **NOW（実欠陥として修正着手済み）** | **エラーにならず無効なソリッドを静かに返す。isValid()警告は追加済み。根本修正(SketchError化)は未実施** |
 | **Multiple Extrude Directions** | OUT OF SCOPE | Extrude is Z-only (default); XY-plane sketches only | LATER |
 | **Revolve / Loft** | OUT OF SCOPE | Not implemented | LATER |
 | **Mesh Export** | IMPLEMENTED | `export_mesh()` function exists | NOW |
@@ -504,7 +553,7 @@ for tf in top_faces:
 
 ## 9. Verified Current Issues
 
-### Issue 1: Test Case Metadata Mismatch (Low Severity)
+### Issue 1: Test Case Metadata Mismatch (Low Severity・確認済み)
 
 **Affected files:**
 - `examples/err_degenerate_polygon.json`
@@ -513,25 +562,54 @@ for tf in top_faces:
 **Problem:**
 - File comments contain expected behavior (期待挙動) that do not match implementation
 - `err_degenerate_polygon.json`: Expects SketchError; implementation returns ✓ SUCCESS with warning
-- `err_nested_island.json`: Expects SketchError (3-level nesting unsupported); implementation returns ✓ SUCCESS
+  （実行して再現済み。`volume=0.0`、警告あり）
 
 **Root cause:**
-- Implementation has been updated; test metadata not synchronized
-- Degeneracy check: Not implemented in `_normalize_polygon()` (L147-153)
-- Nesting support: Implemented in `_build_profile_face()` (L252-281)
+- Degeneracy check: Not implemented in `_normalize_polygon()`
 
-**Impact:**
-- Tests do not accurately reflect current capability
-- No functional defect; output is correct
+**Impact:** テストは現状の挙動を正確に反映していないが、機能的な欠陥ではない。
 
-**Recommendation:**
-- Update test comments to reflect current behavior
-- OR: Implement degeneracy check if zero-area polygons should error
-- Classify nesting support (NOW or LATER)
+**Recommendation:** テストのコメントを現状の挙動に合わせて更新するか、縮退チェックを実装するか。
+
+---
+
+### Issue 2: 3階層以上のネストで無効なソリッドが生成される (実欠陥・修正済み)
+
+**発見の経緯：** 旧版の本ドキュメントが「実装はdocstringより高機能で任意深さのネストに対応」と
+主張していたため、実際にJSONを組み立てて実行し検証した。
+
+**再現手順：**
+```json
+{
+  "sketches":[{"id":"s3","plane":"XY","geometry":[
+    {"type":"rectangle","center":[0,0],"width":100,"height":100},
+    {"type":"rectangle","center":[0,0],"width":60,"height":60},
+    {"type":"rectangle","center":[0,0],"width":20,"height":20}
+  ]}],
+  "operations":[{"op":"extrude","sketch":"s3","distance":5,"result_id":"final"}]
+}
+```
+
+**結果：**
+- `build_from_dict()`は例外を投げず成功する
+- `volume = 30000.0`（本来、島が実体として残るなら34000になるはず。差の4000は
+  「本来は実体であるべき内側の20×20×5の島」の体積と一致する）
+- `result_shape.val().isValid()` → `False`
+- `len(result_shape.solids().vals())` → `1`（分離した複数ソリッドにはなっていない、
+  単一の無効なソリッドとして統合されている）
+
+**根本原因：** `_build_profile_face()`が、`outer`以外の全ての閉ループを無条件で`inner`(穴)として
+扱っており、「穴の中の島」という階層を区別していない。
+
+**対応：** `validate_solid()`に`isValid()`チェックを追加し、この状態を警告として検出できるように
+した。既存の正常系5パターン（box, torus, basic example, 穴あきprofile, Sketch+extrude+subtract）
+で誤検知しないことも確認済み。
+
+**未対応：** `_build_profile_face()`自体で3階層以上を`SketchError`にする根本修正。
 
 **Source references:**
-- `core/sketch.py:_normalize_polygon()` (L147-153) - No degeneracy check
-- `core/sketch.py:_build_profile_face()` (L252-281) - Supports recursive nesting
+- `core/sketch.py:_build_profile_face()`
+- `core/engine.py:validate_solid()`（修正箇所）
 
 ---
 
@@ -557,9 +635,11 @@ for tf in top_faces:
 - ✓ Selection by geometry (normal, area, direction, length)
 - ✓ Topology relationship queries (face edges, edge vertices, etc.)
 - ✓ Transform (position, rotation)
+- ✓ isValid()による形状妥当性チェック（今回追加）
 
 ### Identified for Future (No Commitment)
 - Sketch degeneracy validation (NOW - low priority)
+- **3階層以上ネストのSketchError化（NOW - 根本修正、isValid警告は対症療法に留まる）**
 - Persistent topology ID system (LATER - requires redesign)
 - Pattern/array with instance tracking (LATER)
 - Interactive sketch tool (LATER - requires UI framework)
@@ -592,39 +672,49 @@ for tf in top_faces:
 - **Non-interactive:** Batch processing; not designed for real-time UI
 - **Error-rich:** Validation and error messages for malformed input
 
-**What works well:**
-- Solid geometry generation from sketches
-- Boolean operations with stable topology indexing
-- Selection and geometric queries
-- Error detection (distance=0, unconnected geometry, etc.)
+**What works well（実行して確認済み）:**
+- Solid geometry generation from sketches（line/arc連結、穴あきprofile含む）
+- Boolean operations with stable string-ID-based referencing
+- Selection module構造（SelectionResultの定義）
+- Error detection（座標不足、閉じないループ等）
+- **形状の妥当性検証（isValid()、今回追加）**
 
 **What is intentionally excluded:**
 - Feature history, parametric solving, persistent topology naming, interactive UI
 
-**Development notes:**
-- Source docstring in `core/sketch.py` describes a simpler implementation than currently exists (3-level nesting support is undocumented but working)
-- Test metadata (`err_degenerate_polygon.json`, `err_nested_island.json`) reflects older assumptions
-- No actual functional defects detected in A-class (actual vs. specification) testing
+**What was found broken and fixed in this session:**
+- 3階層以上のネストで無効なソリッドが警告無しに返っていた問題。isValid()チェックで検出可能に。
 
-**Quality:** The implementation is consistent with its design goals and appropriate for batch CAD processing tasks.
+**Development notes:**
+- Test metadata (`err_degenerate_polygon.json`) reflects older assumptions（軽微、実害なし）
+- 3階層ネストの実欠陥は、このドキュメントの前バージョンの誤った楽観的評価
+  （「監査より実装が優れている」）によって見過ごされていた。**「動く」ことと「正しく動く」ことは
+  別であり、isValid()のような妥当性検証を伴わない検証は不十分**、という教訓として記録する。
+
+**Quality:** The implementation is broadly consistent with its design goals, with one verified
+correctness gap (3-level nesting) now detectable via warnings, and pending a root-cause fix.
 
 ---
 
 ## References
 
 **Core modules:**
-- `core/engine.py` - Main orchestration, primitive building, operation execution
+- `core/engine.py` - Main orchestration, primitive building, operation execution, validation（今回修正）
 - `core/sketch.py` - Sketch processing, geometry normalization, profile construction
-- `core/selection.py` - Topology element selection and geometric queries
+- `core/selection.py` - Topology element selection and geometric queries（1638行、定義一致のみ確認済み）
 - `core/transform.py` - 3D transformation (position, rotation)
 
 **Entry points:**
 - `build_from_dict(param_dict: dict) → BuildResult` - Primary API
 - `api/server.py` - HTTP API wrapper
-- `cli/main.py` - Command-line interface
 
 **Example files:**
 - `examples/*.json` - JSON input specifications
 
 ---
 
+*Document generated from source code verification, then corrected after executing actual test
+cases and discovering a real defect (3-level nesting → invalid solid) that the initial version
+of this document had incorrectly characterized as a working feature.*
+
+*Last updated: 2026-08-31（3階層ネスト欠陥の発見・isValid()修正を反映）*

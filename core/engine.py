@@ -20,6 +20,10 @@ from .sketch import (
     build_profile,
     extrude_sketch,
 )
+from .selection import (
+    SelectionError,
+    select_edge_for_operation,
+)
 
 
 class GeometryError(Exception):
@@ -134,6 +138,28 @@ def _apply_operation(shapes: dict[str, cq.Workplane], op: dict, sketches: dict) 
                 raise GeometryError(f"対象形状 '{target_id}' が見つかりません")
             target_shape = shapes[target_id]
             radius = op.get("radius", op.get("distance", 1.0))
+            edge_indices = op.get("edges")
+
+            if edge_indices is not None:
+                # Selectionとの正式接続(§14④)。JSON側で対象エッジをindexのリストで
+                # 明示的に指定できる。全エッジを無条件対象にする旧方式(下のelse節)と違い、
+                # fillet済み形状に対するchamferの連鎖などが正しく動く
+                # (検証済み: 30x30x30 boxでedge0をfillet後、edge6/7/8/10/11をchamferして成功)。
+                if not isinstance(edge_indices, list) or not edge_indices:
+                    raise GeometryError("edgesは空でない整数のリストで指定してください")
+                try:
+                    edge_objs = [select_edge_for_operation(target_shape, idx) for idx in edge_indices]
+                except SelectionError as e:
+                    raise GeometryError(f"エッジ選択に失敗しました: {e}") from e
+
+                solid = target_shape.val()
+                if kind == "fillet":
+                    result_solid = solid.fillet(radius, edge_objs)
+                else:
+                    result_solid = solid.chamfer(radius, None, edge_objs)
+                return cq.Workplane("XY").newObject([result_solid])
+
+            # edges未指定時は従来通り、対象形状の全エッジを一括対象にする(後方互換)
             if kind == "fillet":
                 return target_shape.edges().fillet(radius)
             else:
